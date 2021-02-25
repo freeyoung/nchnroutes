@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-import argparse
-import urllib.request
 import csv
-from ipaddress import IPv4Network, IPv6Network
-import math
+import argparse
+from ipaddress import IPv4Network, AddressValueError
 
 parser = argparse.ArgumentParser(description='Generate non-China routes for BIRD.')
 parser.add_argument('--exclude', metavar='CIDR', type=str, nargs='*',
@@ -23,21 +21,18 @@ class Node:
     def __repr__(self):
         return "<Node %s>" % self.cidr
 
-def dump_tree(lst, ident=0):
-    for n in lst:
-        print("+" * ident + str(n))
-        dump_tree(n.child, ident + 1)
+nchnroutes = []
 
-def dump_bird(lst, f):
+def dump_nchnroutes(lst):
     for n in lst:
         if n.dead:
             continue
 
         if len(n.child) > 0:
-            dump_bird(n.child, f)
+            dump_nchnroutes(n.child)
 
         elif not n.dead:
-            f.write('route %s via "%s";\n' % (n.cidr, args.next))
+            nchnroutes.append(n.cidr)
 
 RESERVED = [
     IPv4Network('0.0.0.0/8'),
@@ -59,16 +54,10 @@ RESERVED = [
     IPv4Network('224.0.0.0/4'),
     IPv4Network('100.64.0.0/10'),
 ]
-RESERVED_V6 = []
+
 if args.exclude:
     for e in args.exclude:
-        if ":" in e:
-            RESERVED_V6.append(IPv6Network(e))
-
-        else:
-            RESERVED.append(IPv4Network(e))
-
-IPV6_UNICAST = IPv6Network('2000::/3')
+        RESERVED.append(IPv4Network(e))
 
 def subtract_cidr(sub_from, sub_by):
     for cidr_to_sub in sub_by:
@@ -87,7 +76,6 @@ def subtract_cidr(sub_from, sub_by):
                 break
 
 root = []
-root_v6 = [Node(IPV6_UNICAST)]
 
 with open("ipv4-address-space.csv", newline='') as f:
     f.readline() # skip the title
@@ -99,27 +87,21 @@ with open("ipv4-address-space.csv", newline='') as f:
             cidr = "%s.0.0.0%s" % (block[:3].lstrip("0"), block[-2:], )
             root.append(Node(IPv4Network(cidr)))
 
-with open("delegated-apnic-latest") as f:
+with open("chnroutes.txt") as f:
     for line in f:
-        if "apnic|CN|ipv4|" in line:
-            line = line.split("|")
-            a = "%s/%d" % (line[3], 32 - math.log(int(line[4]), 2), )
-            a = IPv4Network(a)
+        try:
+            a = IPv4Network(line.strip())
             subtract_cidr(root, (a,))
-
-        elif "apnic|CN|ipv6|" in line:
-            line = line.split("|")
-            a = "%s/%s" % (line[3], line[4])
-            a = IPv6Network(a)
-            subtract_cidr(root_v6, (a,))
+        except AddressValueError:
+            pass
 
 # get rid of reserved addresses
 subtract_cidr(root, RESERVED)
-# get rid of reserved addresses
-subtract_cidr(root_v6, RESERVED_V6)
+
+dump_nchnroutes(root)
 
 with open("routes4.conf", "w") as f:
-    dump_bird(root, f)
+    f.write('\n'.join([f'route {cidr} via "{args.next}";' for cidr in nchnroutes]))
 
-with open("routes6.conf", "w") as f:
-    dump_bird(root_v6, f)
+with open("nchnroutes.txt", "w") as f:
+    f.write('\n'.join([f'{cidr}' for cidr in nchnroutes]))
